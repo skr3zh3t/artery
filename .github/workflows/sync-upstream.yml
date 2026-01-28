@@ -7,7 +7,7 @@ on:
 
 jobs:
   sync:
-    runs-on: ubuntu-latest # slim может не иметь всех нужных инструментов
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
@@ -16,7 +16,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Критично: подгружаем всю историю, чтобы Гит нашел связь
+          fetch-depth:
           token: ${{ secrets.WORKFLOW_SYNC_TOKEN }}
 
       - name: Set up Git User
@@ -45,7 +45,6 @@ jobs:
         if: steps.sync-cache.outputs.cache-hit != 'true'
         id: sync_logic
         run: |
-          # 1. Сразу объявим имя ветки, чтобы оно было доступно при любом исходе
           BRANCH="sync-upstream-$(date +'%Y-%m-%d')"
           echo "branch=$BRANCH" >> $GITHUB_OUTPUT
           
@@ -53,32 +52,22 @@ jobs:
           git config merge.custom-driver.driver "python3 tools/custom_merge.py %O %A %B %P"
           
           git checkout -b "$BRANCH"
-          
-          # 2. МЕРДЖ. 
-          # Мы используем -X theirs. 
-          # Это значит: если твой драйвер не прописан для файла или он не справился (exit 1), 
-          # Гит просто возьмет версию апстрима, а не создаст мусорный конфликт.
           if ! git merge upstream/master --no-ff --allow-unrelated-histories -X theirs -m "Merge upstream changes $(date +'%Y-%m-%d')"; then
             echo "Detected conflicts that the driver left for manual review."
             git add .
-            # Добавляем || true, чтобы скрипт не падал, если коммитить вдруг нечего
             git commit -m "Merge upstream with manual conflicts" || true
           fi
           
           git push origin "$BRANCH" --force
 
-          # 3. ГЕНЕРАЦИЯ ТОП-5 (Безопасная версия)
-          # Используем разделитель-рандом, чтобы данные не сломали GITHUB_OUTPUT
           DELIMITER=$(dd if=/dev/urandom bs=15 count=1 2>/dev/null | base64 | tr -dc 'a-zA-Z')
           {
             echo "body<<$DELIMITER"
-            echo "### Top 5 Recent Changes from Upstream"
+            echo "Top 5 Recent Changes from Upstream"
             echo ""
-            # Берем коммиты из апстрима за последние 14 дней, чтобы не тянуть всю историю
             git log --since="14 days ago" upstream/master --pretty=format:"%h|%s" | while read -r line; do
               [ -z "$line" ] && continue
               hash=$(echo "$line" | cut -d'|' -f1)
-              # Берем статистику, убираем ошибки grep
               stats=$(git show --shortstat "$hash" | tail -n1 || echo "")
               added=$(echo "$stats" | awk '{for(i=1;i<=NF;i++) if($i ~ /insertion/) print $(i-1)}' | grep . || echo 0)
               deleted=$(echo "$stats" | awk '{for(i=1;i<=NF;i++) if($i ~ /deletion/) print $(i-1)}' | grep . || echo 0)
@@ -94,7 +83,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.WORKFLOW_SYNC_TOKEN }}
         run: |
-          # gh pr create упадет, если PR уже существует, поэтому добавим проверку
           if gh pr list --head "${{ steps.sync_logic.outputs.branch }}" | grep -q "${{ steps.sync_logic.outputs.branch }}"; then
             echo "PR already exists, updating..."
           else
