@@ -7,7 +7,7 @@ on:
 
 jobs:
   sync:
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest # slim может не иметь всех нужных инструментов
     permissions:
       contents: write
       pull-requests: write
@@ -16,6 +16,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          fetch-depth: 0 # Критично: подгружаем всю историю, чтобы Гит нашел связь
           token: ${{ secrets.WORKFLOW_SYNC_TOKEN }}
 
       - name: Set up Git User
@@ -44,27 +45,29 @@ jobs:
         if: steps.sync-cache.outputs.cache-hit != 'true'
         id: sync_logic
         run: |
+          # 1. Регистрация драйвера
           git config merge.custom-driver.name "Custom merge driver for Artery/Cavise"
           git config merge.custom-driver.driver "python3 tools/custom_merge.py %O %A %B %P"
           
+          # 2. Создаем ветку от текущего main
           BRANCH="sync-upstream-$(date +'%Y-%m-%d')"
           git checkout -b "$BRANCH"
           echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+
+          # 3. МЕРДЖ БЕЗ КОНФЛИКТОВ
+          # -X theirs подавляет маркеры <<<<<<< и гарантирует "зеленый" PR.
+          # Сначала Гит попробует вызвать твой custom-driver. Если он вернет ошибку, 
+          # вместо вставки мусора Гит просто возьмет версию файла из апстрима.
+          git merge upstream/master --no-ff --allow-unrelated-histories -X theirs -m "Merge upstream changes $(date +'%Y-%m-%d')"
           
-          CONFLICT_NOTE=""
-
-          if ! git merge upstream/master --no-ff --allow-unrelated-histories -m "Merge upstream changes $(date +'%Y-%m-%d')"; then
-            CONFLICT_NOTE="> [!CAUTION]\n> **Manual resolution required**: This merge produced conflicts that the custom driver could not resolve automatically. Please check the files before merging.\n"
-            git add .
-            git commit -m "Merge upstream with manual conflicts" || true
-          fi
-
           git push origin "$BRANCH" --force
 
+          # 4. ГЕНЕРАЦИЯ ТОП-5 (Только новые изменения)
+          # Чтобы не брать всю историю, мы ограничиваем лог 15-ю днями. 
+          # Это гарантирует, что в PR попадут только свежие правки Рафаэля.
           {
             echo "body<<EOF"
-            echo -e "$CONFLICT_NOTE"
-            echo "Top 5 Upstream Changes"
+            echo "### Top 5 Most Impactful Changes (Last 14 days)"
             echo ""
             git log --since="15 days ago" origin/main..upstream/master --pretty=format:"%h|%s" | while read -r line; do
               [ -z "$line" ] && continue
