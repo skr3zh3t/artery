@@ -45,31 +45,39 @@ jobs:
         if: steps.sync-cache.outputs.cache-hit != 'true'
         id: sync_logic
         run: |
-          # 1. Регистрация драйвера
+          # 1. Настройка драйвера
           git config merge.custom-driver.name "Custom merge driver for Artery/Cavise"
           git config merge.custom-driver.driver "python3 tools/custom_merge.py %O %A %B %P"
           
-          # 2. Создаем ветку от текущего main
           BRANCH="sync-upstream-$(date +'%Y-%m-%d')"
           git checkout -b "$BRANCH"
           echo "branch=$BRANCH" >> $GITHUB_OUTPUT
-
-          # 3. МЕРДЖ БЕЗ КОНФЛИКТОВ
-          # -X theirs подавляет маркеры <<<<<<< и гарантирует "зеленый" PR.
-          # Сначала Гит попробует вызвать твой custom-driver. Если он вернет ошибку, 
-          # вместо вставки мусора Гит просто возьмет версию файла из апстрима.
-          git merge upstream/master --no-ff --allow-unrelated-histories -X theirs -m "Merge upstream changes $(date +'%Y-%m-%d')"
+          
+          # 2. УМНЫЙ МЕРДЖ
+          # Мы используем '-X theirs'. 
+          # ПОРЯДОК РАБОТЫ: 
+          # 1. Сначала Git вызывает твой Python-драйвер для файлов из .gitattributes.
+          # 2. Если драйвер вернул exit 0 — файл чист.
+          # 3. Если драйвер вернул exit 1 — Git вставит маркеры <<<<<< (это то, что ты хочешь проверить руками).
+          # 4. Для ВСЕХ ОСТАЛЬНЫХ файлов (где нет драйвера) '-X theirs' молча возьмет версию апстрима.
+          # Это уберет мусорные конфликты в .github/workflows и прочих системных файлах.
+          
+          if ! git merge upstream/master --no-ff --allow-unrelated-histories -X theirs -m "Merge upstream changes $(date +'%Y-%m-%d')"; then
+            echo "Real conflicts detected by driver. Committing with markers."
+            git add .
+            git commit -m "Merge upstream with manual conflicts"
+          fi
           
           git push origin "$BRANCH" --force
 
-          # 4. ГЕНЕРАЦИЯ ТОП-5 (Только новые изменения)
-          # Чтобы не брать всю историю, мы ограничиваем лог 15-ю днями. 
-          # Это гарантирует, что в PR попадут только свежие правки Рафаэля.
+          # 3. ГЕНЕРАЦИЯ ТОП-5 (Только свежее)
+          # Чтобы не тащить историю с 2010 года, берем лог самого апстрима за последние 14 дней.
           {
             echo "body<<EOF"
-            echo "### Top 5 Most Impactful Changes (Last 14 days)"
+            echo "### Top 5 Recent Changes from Upstream"
             echo ""
-            git log --since="15 days ago" origin/main..upstream/master --pretty=format:"%h|%s" | while read -r line; do
+            # Берем последние 5 коммитов, которые физически появились в апстриме за 2 недели
+            git log --since="14 days ago" upstream/master --pretty=format:"%h|%s" | while read -r line; do
               [ -z "$line" ] && continue
               hash=$(echo "$line" | cut -d'|' -f1)
               stats=$(git show --shortstat "$hash" | tail -n1)
@@ -81,15 +89,3 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
           echo "${{ steps.upstream.outputs.hash }}" > .sync-done
-
-      - name: Create Pull Request
-        if: steps.sync-cache.outputs.cache-hit != 'true'
-        env:
-          GITHUB_TOKEN: ${{ secrets.WORKFLOW_SYNC_TOKEN }}
-        run: |
-          gh pr create \
-            --repo ${{ github.repository }} \
-            --title "Merge upstream changes ($(date +'%Y-%m-%d'))" \
-            --body "${{ steps.sync_logic.outputs.body }}" \
-            --base main \
-            --head ${{ steps.sync_logic.outputs.branch }}
