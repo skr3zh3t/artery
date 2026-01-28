@@ -9,7 +9,7 @@
     ".github/workflows",
     ".gitmodules"
   ],
-  "default_behavior": "prefer_theirs",
+  "default_behavior": "manual_resolution",
   "upstream_remote": "upstream",
   "upstream_branch": "master"
 }

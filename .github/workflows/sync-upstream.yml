@@ -45,17 +45,23 @@ jobs:
         if: steps.sync-cache.outputs.cache-hit != 'true'
         id: sync_logic
         run: |
-          BRANCH="sync-upstream-$(date +'%Y-%m-%d')"
-          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
-          
           git config merge.custom-driver.name "Custom merge driver for Artery/Cavise"
           git config merge.custom-driver.driver "python3 tools/custom_merge.py %O %A %B %P"
           
+          BRANCH="sync-upstream-$(date +'%Y-%m-%d')"
           git checkout -b "$BRANCH"
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+
+          # Пытаемся мерджить (драйвер сработает для контента)
           if ! git merge upstream/master --no-ff --allow-unrelated-histories -X theirs -m "Merge upstream changes $(date +'%Y-%m-%d')"; then
-            echo "Detected conflicts that the driver left for manual review."
+            echo "Structural conflicts detected (like add/add). Running custom resolver..."
+            
+            # ЗАПУСКАЕМ РЕЗОЛВЕР: он прочитает JSON и поправит .gitignore и прочее
+            python3 tools/custom_merge.py --fix-structural
+            
+            # Фиксируем результат, если резолвер что-то исправил
             git add .
-            git commit -m "Merge upstream with manual conflicts" || true
+            git commit -m "Merge upstream with resolved structural conflicts" || echo "Nothing to commit"
           fi
           
           git push origin "$BRANCH" --force

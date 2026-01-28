@@ -4,6 +4,7 @@ import argparse
 import json
 import shutil
 import sys
+import subprocess
 from pathlib import Path
 from typing import TypedDict, List
 
@@ -57,14 +58,66 @@ async def is_upstream_merge(config: Config) -> bool:
 
     return merge_head == upstream_rev if merge_head else False
 
+def resolve_structural_conflicts(config: Config):
+    '''
+    Finds structural conflicts (like add/add, status 'AA') and resolves them 
+    using the logic from the JSON configuration.
+    '''
+    print("[Custom Merge] Scanning for structural conflicts (add/add)...")
+    try:
+        # Get porcelain status to find files with 'AA' (both added)
+        status_output = subprocess.check_output(['git', 'status', '--porcelain'], text=True)
+    except subprocess.CalledProcessError:
+        return
+
+    for line in status_output.splitlines():
+        # AA indicates Both Added (structural conflict)
+        if line.startswith('AA '):
+            file_path = line[3:].strip()
+            norm_path = Path(file_path).as_posix()
+            
+            resolved = False
+            
+            # 1. Check prefer_theirs
+            for path_prefix in config.get('prefer_theirs', []):
+                if norm_path.startswith(path_prefix):
+                    print(f'[Custom Merge] AA Conflict: {norm_path} -> Strategy: PREFER THEIRS')
+                    subprocess.run(['git', 'checkout', '--theirs', file_path], check=True)
+                    subprocess.run(['git', 'add', file_path], check=True)
+                    resolved = True
+                    break
+            
+            if resolved: continue
+
+            # 2. Check prefer_ours
+            for path_prefix in config.get('prefer_ours', []):
+                if norm_path.startswith(path_prefix):
+                    print(f'[Custom Merge] AA Conflict: {norm_path} -> Strategy: PREFER OURS')
+                    subprocess.run(['git', 'checkout', '--ours', file_path], check=True)
+                    subprocess.run(['git', 'add', file_path], check=True)
+                    resolved = True
+                    break
+
+            if resolved: continue
+
+            # 3. Default behavior
+            behavior = config.get('default_behavior', 'manual_resolution')
+            if behavior == 'prefer_theirs':
+                print(f'[Custom Merge] AA Conflict: {norm_path} -> Default: PREFER THEIRS')
+                subprocess.run(['git', 'checkout', '--theirs', file_path], check=True)
+                subprocess.run(['git', 'add', file_path], check=True)
+            elif behavior == 'prefer_ours':
+                print(f'[Custom Merge] AA Conflict: {norm_path} -> Default: PREFER OURS')
+                subprocess.run(['git', 'checkout', '--ours', file_path], check=True)
+                subprocess.run(['git', 'add', file_path], check=True)
+            else:
+                print(f'[Custom Merge] AA Conflict: {norm_path} -> Left for MANUAL resolution')
+
 async def main() -> int:
     usage_info = """
 Setup instructions:
   git config merge.custom-driver.name "Custom merge driver for Artery/Cavise"
   git config merge.custom-driver.driver "python3 tools/custom_merge.py %O %A %B %P"
-  git remote add upstream https://github.com/riebl/artery.git
-  git fetch upstream
-  git merge upstream/master --no-ff
     """
 
     parser = argparse.ArgumentParser(
@@ -72,14 +125,30 @@ Setup instructions:
         epilog=usage_info,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument('base', type=Path, help='O: Ancestor file')
-    parser.add_argument('current', type=Path, help='A: Current branch file')
-    parser.add_argument('other', type=Path, help='B: Other branch file')
-    parser.add_argument('path', type=str, help='P: Original file path')
+    # Mode flag for structural conflicts
+    parser.add_argument('--fix-structural', action='store_true', help='Handle add/add conflicts after merge')
+    
+    # Git driver arguments (positional)
+    parser.add_argument('base', type=Path, nargs='?', help='O: Ancestor file')
+    parser.add_argument('current', type=Path, nargs='?', help='A: Current branch file')
+    parser.add_argument('other', type=Path, nargs='?', help='B: Other branch file')
+    parser.add_argument('path', type=str, nargs='?', help='P: Original file path')
+    
     args = parser.parse_args()
 
     script_dir = Path(__file__).parent.resolve()
     config = load_config(script_dir / 'merge_config.json')
+
+    # --- MODE: Structural Fix ---
+    if args.fix_structural:
+        resolve_structural_conflicts(config)
+        return 0
+
+    # --- MODE: Content Merge (Standard Driver) ---
+    if not all([args.base, args.current, args.other, args.path]):
+        parser.print_help()
+        return 1
+
     norm_path = Path(args.path).as_posix()
 
     # 1. Binary check
