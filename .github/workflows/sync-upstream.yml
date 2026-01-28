@@ -45,47 +45,63 @@ jobs:
         if: steps.sync-cache.outputs.cache-hit != 'true'
         id: sync_logic
         run: |
-          # 1. Настройка драйвера
+          # 1. Сразу объявим имя ветки, чтобы оно было доступно при любом исходе
+          BRANCH="sync-upstream-$(date +'%Y-%m-%d')"
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+          
           git config merge.custom-driver.name "Custom merge driver for Artery/Cavise"
           git config merge.custom-driver.driver "python3 tools/custom_merge.py %O %A %B %P"
           
-          BRANCH="sync-upstream-$(date +'%Y-%m-%d')"
           git checkout -b "$BRANCH"
-          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
           
-          # 2. УМНЫЙ МЕРДЖ
-          # Мы используем '-X theirs'. 
-          # ПОРЯДОК РАБОТЫ: 
-          # 1. Сначала Git вызывает твой Python-драйвер для файлов из .gitattributes.
-          # 2. Если драйвер вернул exit 0 — файл чист.
-          # 3. Если драйвер вернул exit 1 — Git вставит маркеры <<<<<< (это то, что ты хочешь проверить руками).
-          # 4. Для ВСЕХ ОСТАЛЬНЫХ файлов (где нет драйвера) '-X theirs' молча возьмет версию апстрима.
-          # Это уберет мусорные конфликты в .github/workflows и прочих системных файлах.
-          
+          # 2. МЕРДЖ. 
+          # Мы используем -X theirs. 
+          # Это значит: если твой драйвер не прописан для файла или он не справился (exit 1), 
+          # Гит просто возьмет версию апстрима, а не создаст мусорный конфликт.
           if ! git merge upstream/master --no-ff --allow-unrelated-histories -X theirs -m "Merge upstream changes $(date +'%Y-%m-%d')"; then
-            echo "Real conflicts detected by driver. Committing with markers."
+            echo "Detected conflicts that the driver left for manual review."
             git add .
-            git commit -m "Merge upstream with manual conflicts"
+            # Добавляем || true, чтобы скрипт не падал, если коммитить вдруг нечего
+            git commit -m "Merge upstream with manual conflicts" || true
           fi
           
           git push origin "$BRANCH" --force
 
-          # 3. ГЕНЕРАЦИЯ ТОП-5 (Только свежее)
-          # Чтобы не тащить историю с 2010 года, берем лог самого апстрима за последние 14 дней.
+          # 3. ГЕНЕРАЦИЯ ТОП-5 (Безопасная версия)
+          # Используем разделитель-рандом, чтобы данные не сломали GITHUB_OUTPUT
+          DELIMITER=$(dd if=/dev/urandom bs=15 count=1 2>/dev/null | base64 | tr -dc 'a-zA-Z')
           {
-            echo "body<<EOF"
+            echo "body<<$DELIMITER"
             echo "### Top 5 Recent Changes from Upstream"
             echo ""
-            # Берем последние 5 коммитов, которые физически появились в апстриме за 2 недели
+            # Берем коммиты из апстрима за последние 14 дней, чтобы не тянуть всю историю
             git log --since="14 days ago" upstream/master --pretty=format:"%h|%s" | while read -r line; do
               [ -z "$line" ] && continue
               hash=$(echo "$line" | cut -d'|' -f1)
-              stats=$(git show --shortstat "$hash" | tail -n1)
-              added=$(echo "$stats" | grep -oP '\d+(?= insertion)' || echo 0)
-              deleted=$(echo "$stats" | grep -oP '\d+(?= deletion)' || echo 0)
+              # Берем статистику, убираем ошибки grep
+              stats=$(git show --shortstat "$hash" | tail -n1 || echo "")
+              added=$(echo "$stats" | awk '{for(i=1;i<=NF;i++) if($i ~ /insertion/) print $(i-1)}' | grep . || echo 0)
+              deleted=$(echo "$stats" | awk '{for(i=1;i<=NF;i++) if($i ~ /deletion/) print $(i-1)}' | grep . || echo 0)
               echo "$((added + deleted)) $line"
             done | sort -rn | head -n 5 | awk '{$1=""; print "* " $0}'
-            echo "EOF"
+            echo "$DELIMITER"
           } >> "$GITHUB_OUTPUT"
 
           echo "${{ steps.upstream.outputs.hash }}" > .sync-done
+
+      - name: Create Pull Request
+        if: steps.sync-cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.WORKFLOW_SYNC_TOKEN }}
+        run: |
+          # gh pr create упадет, если PR уже существует, поэтому добавим проверку
+          if gh pr list --head "${{ steps.sync_logic.outputs.branch }}" | grep -q "${{ steps.sync_logic.outputs.branch }}"; then
+            echo "PR already exists, updating..."
+          else
+            gh pr create \
+              --repo ${{ github.repository }} \
+              --title "Merge upstream changes ($(date +'%Y-%m-%d'))" \
+              --body "${{ steps.sync_logic.outputs.body }}" \
+              --base main \
+              --head ${{ steps.sync_logic.outputs.branch }}
+          fi
