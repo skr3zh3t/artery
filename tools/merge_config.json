@@ -1,6 +1,8 @@
 {
   "prefer_theirs": [
-    "src/artery"
+    "src/artery",
+    ".devcontainer",
+    ".dockerignore"
   ],
   "prefer_ours": [
     "src/cavise",
