@@ -37,7 +37,7 @@ jobs:
         run: git config --global --add safe.directory $GITHUB_WORKSPACE
 
       - name: Clang-Tidy Review
-        uses: ZedThree/clang-tidy-review@v0.22.0
+        uses: ZedThree/clang-tidy-review@v0.14.0
         id: review
         with:
 
