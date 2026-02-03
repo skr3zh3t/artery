@@ -2,6 +2,7 @@ name: Lint Check
 
 on:
   workflow_call:
+  pull_request:
 
 jobs:
   clang-tidy:
