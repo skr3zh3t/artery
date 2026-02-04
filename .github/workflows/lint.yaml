@@ -19,28 +19,22 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Configure CMake
-        run: |
-          tools/build.py -cl              \
-            --generator Ninja             \
-            -D WITH_SIMULTE:BOOL=ON       \
-            -D WITH_OTS:BOOL=ON           \
-            -D WITH_TESTBED:BOOL=ON       \
-            -D WITH_TRANSFUSION:BOOL=ON   \
-            -D CMAKE_EXPORT_COMPILE_COMMANDS=ON
-
-
-      - name: Build Artery codegen target
-        run: cmake --build build/Debug --target artery-codegen
-
-      - name: Fix git safe directory
-        run: git config --global --add safe.directory $GITHUB_WORKSPACE
-
-      - name: Clang-Tidy Review
-        uses: ZedThree/clang-tidy-review@v0.14.0
+      - name: Run clang-tidy
+        uses: ZedThree/clang-tidy-review@v0.23.0
         id: review
         with:
-
-          token: ${{ secrets.GITHUB_TOKEN }}
           build_dir: build/Debug
-          split_workflow: false
+          cmake_command: |
+            python3 tools/build.py -cl       \
+              --generator Ninja               \
+              -D WITH_SIMULTE:BOOL=ON         \
+              -D WITH_OTS:BOOL=ON             \
+              -D WITH_TESTBED:BOOL=ON         \
+              -D WITH_TRANSFUSION:BOOL=ON     \
+              -D CMAKE_EXPORT_COMPILE_COMMANDS=ON
+            
+            cmake --build build/Debug --target artery-codegen
+
+      - name: Upload clang-tidy fixes
+        if: always()
+        uses: ZedThree/clang-tidy-review/upload@v0.23.0
