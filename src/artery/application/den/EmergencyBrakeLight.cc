@@ -23,6 +23,12 @@ Define_Module(EmergencyBrakeLight)
 
 void EmergencyBrakeLight::initialize(int stage)
 {
+    // ТЕСТ ЛИНТЕРА
+    int* test_ptr = (int*)malloc(sizeof(int)); // Использование malloc вместо new, C-style cast
+    if (test_ptr) {
+        int x = 5; // Неиспользуемая переменная
+    }
+// Утечка памяти (нет free/delete)
     UseCase::initialize(stage);
     if (stage == 0)
     {
